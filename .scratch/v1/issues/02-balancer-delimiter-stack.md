@@ -4,11 +4,11 @@
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `foo(bar(a, b` → `foo(bar(a, b));` (whole stack closed in order).
-- [ ] `const arr = [1, 2` → `const arr = [1, 2];`.
-- [ ] `const o = { a: 1` → `const o = { a: 1 };` and `foo({ a: 1` → `foo({ a: 1 });`.
-- [ ] Delimiters inside strings/comments are not counted: `foo("a)b"` and `foo(a /* ) */` balance correctly.
-- [ ] Code inside `${…}` **is** counted: `` `${foo(a `` closes the inner `(`.
-- [ ] Covered by table-driven `analyze` tests (`region_text + indent_context → verdict`).
+- [x] `foo(bar(a, b` → `foo(bar(a, b));` (whole stack closed in order).
+- [x] `const arr = [1, 2` → `const arr = [1, 2];`.
+- [x] `const o = { a: 1` → `const o = { a: 1 };` and `foo({ a: 1` → `foo({ a: 1 });`.
+- [x] Delimiters inside strings/comments are not counted: `foo("a)b"` and `foo(a /* ) */` balance correctly.
+- [x] Code inside `${…}` **is** counted: `` `${foo(a `` closes the inner `(`.
+- [x] Covered by table-driven `analyze` tests (`region_text + indent_context → verdict`).
