@@ -1,0 +1,3 @@
+# Purely additive completion — fullstop never deletes
+
+Completion only *inserts* the delta needed to finish a statement (missing delimiters, an opened block, a terminator) — it never removes or rewrites existing characters. The guarantee that a hotkey pressed hundreds of times a day can never eat your code outweighs the convenience of "fixing" edge cases like `if (cond);` (a complete empty-body statement), which are instead treated as already-complete and left alone (safe fallback: fresh line below). Reinterpreting finished code — e.g. deleting a `;` to convert an empty-body construct into a block — is a deliberate v2 opt-in, not a silent default.
