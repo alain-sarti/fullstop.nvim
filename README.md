@@ -45,15 +45,20 @@ require('fullstop').setup({
 ## Develop
 
 ```sh
-make check       # lint + format-check + tests — what CI gates on
+make check       # everything: lint + format-check + tests
 make test        # full mini.test suite, headless
 make test-file FILE=tests/test_analyze.lua
 make lint        # luacheck (correctness)
 make format      # stylua, in place (formatting)
+make parsers     # compile the typescript/tsx parsers into deps/
 ```
 
 Linting needs `luacheck` and `stylua` (`brew install luacheck stylua`). `make`
-clones its test dependency (mini.nvim) into `deps/` on first run; tests use the
-`typescript`/`tsx` parsers from your standard Neovim data dir.
+clones its test dependency (mini.nvim) into `deps/` on first run.
+
+Tests need the `typescript`/`tsx` treesitter parsers: they're used from your
+standard Neovim data dir if present, otherwise run `make parsers` once to build
+them into `deps/` (needs a C compiler). CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+always builds them this way, so the suite is reproducible on a bare machine.
 
 MIT licensed.

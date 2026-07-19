@@ -16,7 +16,9 @@ vim.opt.runtimepath:append(root)
 -- mini.nvim (mini.test).
 vim.opt.runtimepath:append(root .. '/deps/mini.nvim')
 
--- Treesitter parsers live in the user's standard data dir.
+-- Treesitter parsers: prefer the repo-local build (`make parsers`), then fall
+-- back to the developer's standard Neovim data dir.
+vim.opt.runtimepath:append(root .. '/deps/parsers')
 vim.opt.runtimepath:append(vim.fn.stdpath('data') .. '/site')
 
 -- Map the TS/TSX filetypes to their grammars so `get_parser` resolves them.
