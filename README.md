@@ -45,11 +45,15 @@ require('fullstop').setup({
 ## Develop
 
 ```sh
+make check       # lint + format-check + tests — what CI gates on
 make test        # full mini.test suite, headless
 make test-file FILE=tests/test_analyze.lua
+make lint        # luacheck (correctness)
+make format      # stylua, in place (formatting)
 ```
 
-`make` clones its test dependency (mini.nvim) into `deps/` on first run. Tests use
-the `typescript`/`tsx` parsers from your standard Neovim data dir.
+Linting needs `luacheck` and `stylua` (`brew install luacheck stylua`). `make`
+clones its test dependency (mini.nvim) into `deps/` on first run; tests use the
+`typescript`/`tsx` parsers from your standard Neovim data dir.
 
 MIT licensed.

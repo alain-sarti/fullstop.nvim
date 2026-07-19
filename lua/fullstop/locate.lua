@@ -66,8 +66,7 @@ function M.locate(buf, cursor)
   -- so a trailing terminator/closer never lands after stray whitespace.
   local end_col = #(get_line(buf, erow):gsub('%s+$', ''))
 
-  local text =
-    table.concat(vim.api.nvim_buf_get_text(buf, srow, scol, erow, end_col, {}), '\n')
+  local text = table.concat(vim.api.nvim_buf_get_text(buf, srow, scol, erow, end_col, {}), '\n')
 
   local head_line = get_line(buf, srow)
 

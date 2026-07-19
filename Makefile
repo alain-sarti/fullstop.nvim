@@ -1,4 +1,21 @@
-.PHONY: test test-file deps
+.PHONY: check lint format format-check test test-file deps
+
+LUA_DIRS := lua plugin tests
+
+# Everything CI should gate on: lint + formatting + tests.
+check: lint format-check test
+
+# Lint for correctness (unused/undefined/shadowed).
+lint:
+	luacheck $(LUA_DIRS)
+
+# Format in place.
+format:
+	stylua $(LUA_DIRS)
+
+# Fail if anything is unformatted (CI).
+format-check:
+	stylua --check $(LUA_DIRS)
 
 # Run the full mini.test suite headless. Bootstraps deps/ on first run.
 test: deps
