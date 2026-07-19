@@ -4,12 +4,12 @@
 
 **Blocked by:** 02.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Ambiguous regex (`const r = /a(b/`) → **Decline**: buffer unchanged, hint shown, no fresh line.
-- [ ] Deep `${…}` nesting and unterminated strings → Decline, never a guessed close.
-- [ ] `for (let i = 0; i < n; i++` → the header `;` don't count as terminators (handled correctly, not seen as already-terminated).
-- [ ] A statement with a depth-0 tail `;` → **Advance** (fresh line below), no double `;`.
-- [ ] `const x = getValue(a  // grab it` → `const x = getValue(a); // grab it` (insertion before the comment; comment preserved).
-- [ ] Decline and Advance are distinct: **Decline never opens a line.**
-- [ ] Table-driven `analyze` tests cover each edge.
+- [x] Ambiguous regex (`const r = /a(b/`) → **Decline**: buffer unchanged, hint shown, no fresh line.
+- [x] Deep `${…}` nesting and unterminated strings → Decline, never a guessed close.
+- [x] `for (let i = 0; i < n; i++` → the header `;` don't count as terminators (handled correctly, not seen as already-terminated).
+- [x] A statement with a depth-0 tail `;` → **Advance** (fresh line below), no double `;`.
+- [x] `const x = getValue(a  // grab it` → `const x = getValue(a); // grab it` (insertion before the comment; comment preserved).
+- [x] Decline and Advance are distinct: **Decline never opens a line.**
+- [x] Table-driven `analyze` tests cover each edge.
