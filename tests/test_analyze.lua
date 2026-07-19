@@ -79,10 +79,12 @@ T['ignores a closer inside a block comment'] = function()
   )
 end
 
+-- The `)` in the comment doesn't balance the paren; the comment is a trailing
+-- one, so (issue 03) it is preserved after the insertion via `tail`.
 T['ignores a closer inside a line comment'] = function()
   MiniTest.expect.equality(
     analyze('foo(a // )', ctx),
-    { kind = 'complete', insert = ');', opens_block = false }
+    { kind = 'complete', insert = ');', opens_block = false, tail = ' // )' }
   )
 end
 
@@ -100,6 +102,77 @@ T['counts an open delimiter inside a template interpolation'] = function()
     analyze('`${foo(a', ctx),
     { kind = 'complete', insert = ')}`;', opens_block = false }
   )
+end
+
+-- Issue 03: the decline gate. When the lexer can't be sure of the structure it
+-- returns Decline (buffer untouched, a hint), never a guessed close.
+
+-- A `/` where a regex could begin (after `=`, an opener, an operator, ...) is
+-- ambiguous with division, and a regex body's ( [ { would poison the balancer.
+T['declines an ambiguous regex literal'] = function()
+  MiniTest.expect.equality(
+    analyze('const r = /a(b/', ctx),
+    { kind = 'decline', reason = 'ambiguous regex or division' }
+  )
+end
+
+-- ...but a `/` right after an expression is plain division: lex it and complete.
+T['treats a slash after an expression as division, not a decline'] = function()
+  MiniTest.expect.equality(
+    analyze('const x = a / b', ctx),
+    { kind = 'complete', insert = ';', opens_block = false }
+  )
+end
+
+-- Template interpolation nested past depth 1 (a template inside a `${...}`) is
+-- beyond what the balancer safely tracks.
+T['declines a template literal nested inside an interpolation'] = function()
+  MiniTest.expect.equality(
+    analyze('`a${`b', ctx),
+    { kind = 'decline', reason = 'nested template literal' }
+  )
+end
+
+T['declines an unterminated string'] = function()
+  MiniTest.expect.equality(
+    analyze('const x = "hello', ctx),
+    { kind = 'decline', reason = 'unterminated string' }
+  )
+end
+
+-- Issue 03: terminator placement. Only a `;` at delimiter-depth 0 at the code
+-- tail counts as already-terminated.
+
+-- The `;` in a for-header sit at depth 1 (inside the paren), so they never read
+-- as "already terminated" — the statement still completes (closes the paren).
+T['for-header semicolons are not terminators'] = function()
+  MiniTest.expect.equality(
+    analyze('for (let i = 0; i < n; i++', ctx),
+    { kind = 'complete', insert = ');', opens_block = false }
+  )
+end
+
+-- Issue 03: closers/`;` splice before a trailing comment so it survives.
+T['completes before a trailing line comment'] = function()
+  MiniTest.expect.equality(
+    analyze('const x = getValue(a // grab it', ctx),
+    { kind = 'complete', insert = ');', opens_block = false, tail = ' // grab it' }
+  )
+end
+
+-- Whitespace before the comment is preserved verbatim (spacing is a formatter's
+-- job, not fullstop's), so the spec's two-space example keeps its two spaces.
+T['preserves the original spacing before a trailing comment'] = function()
+  MiniTest.expect.equality(
+    analyze('const x = getValue(a  // grab it', ctx),
+    { kind = 'complete', insert = ');', opens_block = false, tail = '  // grab it' }
+  )
+end
+
+-- A statement already terminated at depth 0, with a trailing comment, advances —
+-- the comment must not hide the `;` and cause a double terminator.
+T['a terminated statement with a trailing comment advances'] = function()
+  MiniTest.expect.equality(analyze('const x = 1; // done', ctx), { kind = 'advance' })
 end
 
 return T

@@ -35,11 +35,27 @@ function M.apply(buf, cursor, region, verdict)
     return
   end
 
-  -- verdict.kind == 'complete'. Issue 01 only produces opens_block = false
-  -- (cluster A): splice the closers + terminator, then drop a fresh line below,
-  -- all in one edit. Block-opening arrives in tickets 04-05.
+  -- verdict.kind == 'complete', opens_block = false (cluster A): splice the
+  -- closers + terminator, then drop a fresh line below, all in one edit.
+  -- Block-opening arrives in tickets 04-05.
+  --
+  -- A trailing comment (verdict.tail) is re-emitted after the insertion, so the
+  -- closers/`;` land before it and it survives. tail sits at the end of the end
+  -- line, so its byte length is exactly how far back from end_col to splice.
+  --
+  -- This spans the comment's bytes, but re-emits them verbatim (tail is a literal
+  -- suffix of the region), so ADR-0001 ("never eat your code") holds: the comment
+  -- is preserved exactly. Spanning it is what keeps the whole edit one undo step.
   local row, col = region.end_row, region.end_col
-  vim.api.nvim_buf_set_text(buf, row, col, row, col, { verdict.insert, region.indent_context.base })
+  local tail = verdict.tail or ''
+  vim.api.nvim_buf_set_text(
+    buf,
+    row,
+    col - #tail,
+    row,
+    col,
+    { verdict.insert .. tail, region.indent_context.base }
+  )
   insert_at_line_end(row + 2)
 end
 

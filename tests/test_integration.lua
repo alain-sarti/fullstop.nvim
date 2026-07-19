@@ -90,4 +90,27 @@ T['a plain TS statement completes in a tsx buffer (buffer parser)'] = function()
   eq(child.fn.mode(), 'i')
 end
 
+-- Issue 03: an ambiguous regex declines — buffer untouched, a hint shown, no
+-- fresh line. Capture vim.notify to prove the hint fires.
+T['an ambiguous regex declines: buffer unchanged, hint shown, no fresh line'] = function()
+  setup_buffer('typescript', { 'const r = /a(b/' }, { 1, 11 })
+  child.lua([[
+    _G.hints = {}
+    vim.notify = function(msg) table.insert(_G.hints, msg) end
+  ]])
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'const r = /a(b/' })
+  eq(child.lua_get('_G.hints'), { 'fullstop: ambiguous regex or division' })
+end
+
+-- Issue 03: the insertion lands before a trailing comment, which survives.
+T['completes before a trailing comment, preserving it'] = function()
+  setup_buffer('typescript', { 'const x = getValue(a // grab it' }, { 1, 12 })
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'const x = getValue(a); // grab it', '' })
+  eq(child.fn.mode(), 'i')
+end
+
 return T
