@@ -4,11 +4,11 @@
 
 **Blocked by:** 03.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `if (cond` → `if (cond) {`, cursor inside at `base + unit`, `}` at `base`.
-- [ ] `switch (v`, `for (…`, `while (…`, `try`, `} else if (x`, `catch (e`, `finally` each open a block, cursor inside, no `;`.
-- [ ] `if (cond) {` (brace already typed) → supplies only `}`, doesn't double the brace.
-- [ ] `} while (done` → `} while (done);` (terminate, not a block).
-- [ ] Tabs and spaces buffers both indent correctly; `base` tracks the head line on a wrapped statement.
-- [ ] Table-driven `analyze` tests cover each construct, the `} while` guard, and block-vs-object.
+- [x] `if (cond` → `if (cond) {`, cursor inside at `base + unit`, `}` at `base`.
+- [x] `switch (v`, `for (…`, `while (…`, `try`, `} else if (x`, `catch (e`, `finally` each open a block, cursor inside, no `;`.
+- [x] `if (cond) {` (brace already typed) → supplies only `}`, doesn't double the brace.
+- [x] `} while (done` → `} while (done);` (terminate, not a block).
+- [x] Tabs and spaces buffers both indent correctly; `base` tracks the head line on a wrapped statement.
+- [x] Table-driven `analyze` tests cover each construct, the `} while` guard, and block-vs-object.
