@@ -113,4 +113,61 @@ T['completes before a trailing comment, preserving it'] = function()
   eq(child.fn.mode(), 'i')
 end
 
+-- Issue 04, cluster B: a control-flow head opens a `{ }` block — closing `)`,
+-- appending ` {`, landing the cursor on an indented body line, `}` at base.
+T['opens a block for an if head (spaces buffer)'] = function()
+  setup_buffer('typescript', { 'if (cond' }, { 1, 4 })
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'if (cond) {', '  ', '}' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
+  eq(child.fn.mode(), 'i')
+end
+
+-- A tab-indented buffer: `unit` resolves to a tab, so the body line is one tab.
+T['opens a block in a tab-indented buffer'] = function()
+  setup_buffer('typescript', { 'if (cond' }, { 1, 4 })
+  child.lua('vim.bo.expandtab = false vim.bo.shiftwidth = 0 vim.bo.tabstop = 4')
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'if (cond) {', '\t', '}' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 1 })
+  eq(child.fn.mode(), 'i')
+end
+
+-- `base` tracks the head line, not the physical line the completion lands on: a
+-- statement wrapped across lines opens its block at the head-line indent.
+T['a wrapped head opens its block at the head-line indent'] = function()
+  setup_buffer('typescript', { '  if (', '    cond' }, { 2, 4 })
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  child.type_keys('<C-j>')
+
+  eq(lines(), { '  if (', '    cond) {', '    ', '  }' })
+  eq(child.api.nvim_win_get_cursor(0), { 3, 4 })
+end
+
+-- Idempotent: firing on a head whose `{` is already typed reuses it (no doubled
+-- brace), and the whole block reverts with a single undo.
+T['reuses an already-typed brace, one undo'] = function()
+  setup_buffer('typescript', { 'if (cond) {' }, { 1, 4 })
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  child.type_keys('i', '<C-j>')
+
+  eq(lines(), { 'if (cond) {', '  ', '}' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
+
+  child.type_keys('<Esc>', 'u')
+  eq(lines(), { 'if (cond) {' })
+end
+
+-- The do-while tail `} while (...)` terminates (cluster A), it does not block.
+T['a } while tail terminates, not a block'] = function()
+  setup_buffer('typescript', { '} while (done' }, { 1, 5 })
+  child.type_keys('<C-j>')
+
+  eq(lines(), { '} while (done);', '' })
+  eq(child.fn.mode(), 'i')
+end
+
 return T

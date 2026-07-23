@@ -144,11 +144,12 @@ end
 -- tail counts as already-terminated.
 
 -- The `;` in a for-header sit at depth 1 (inside the paren), so they never read
--- as "already terminated" — the statement still completes (closes the paren).
+-- as "already terminated". Issue 04: `for` is a block head, so this completes by
+-- closing the paren and opening a block — the header `;` still don't terminate it.
 T['for-header semicolons are not terminators'] = function()
   MiniTest.expect.equality(
     analyze('for (let i = 0; i < n; i++', ctx),
-    { kind = 'complete', insert = ');', opens_block = false }
+    { kind = 'complete', opens_block = true, insert = ') {', body = '  ', close = '}' }
   )
 end
 
@@ -173,6 +174,59 @@ end
 -- the comment must not hide the `;` and cause a double terminator.
 T['a terminated statement with a trailing comment advances'] = function()
   MiniTest.expect.equality(analyze('const x = 1; // done', ctx), { kind = 'advance' })
+end
+
+-- Issue 04, cluster B: a control-flow head opens an idempotent `{ }` block —
+-- closers, then ` {`; the body line lands at `base + unit` (cursor there) and the
+-- closing `}` at `base`. No trailing `;`.
+T['opens a block for an if head, closing its condition'] = function()
+  MiniTest.expect.equality(
+    analyze('if (cond', ctx),
+    { kind = 'complete', opens_block = true, insert = ') {', body = '  ', close = '}' }
+  )
+end
+
+-- Table-driven coverage of every cluster-B construct. Each head closes its
+-- condition (if any) and opens a block: cursor at `base + unit`, `}` at `base`,
+-- no `;`. The compared tuples carry the input so a failure names its case.
+T['opens a block for each control-flow construct'] = function()
+  local block = function(insert)
+    return { kind = 'complete', opens_block = true, insert = insert, body = '  ', close = '}' }
+  end
+  local cases = {
+    { 'if (cond', ') {' },
+    { 'switch (v', ') {' },
+    { 'for (const x of arr', ') {' },
+    { 'for (const k in obj', ') {' },
+    { 'while (go', ') {' },
+    { 'try', ' {' },
+    { 'else', ' {' },
+    { '} else if (x', ') {' },
+    { 'catch (e', ') {' },
+    { 'finally', ' {' },
+  }
+  for _, c in ipairs(cases) do
+    MiniTest.expect.equality({ c[1], analyze(c[1], ctx) }, { c[1], block(c[2]) })
+  end
+end
+
+-- Idempotent: a `{` already typed is reused (block-vs-object lookbehind), so
+-- firing twice never doubles the brace — the head-line insert adds nothing.
+-- (Contrast the object-literal `{` in `const o = { a: 1` above, which closes to
+-- ` };` — the head keyword is what tells block from object.)
+T['reuses an already-typed block brace instead of doubling it'] = function()
+  MiniTest.expect.equality(
+    analyze('if (cond) {', ctx),
+    { kind = 'complete', opens_block = true, insert = '', body = '  ', close = '}' }
+  )
+end
+
+-- The do-while tail `} while (...)` terminates — it is NOT a block head.
+T['a } while tail terminates instead of opening a block'] = function()
+  MiniTest.expect.equality(
+    analyze('} while (done', ctx),
+    { kind = 'complete', insert = ');', opens_block = false }
+  )
 end
 
 return T

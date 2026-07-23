@@ -48,6 +48,24 @@ function M.apply(buf, cursor, region, verdict)
   -- is preserved exactly. Spanning it is what keeps the whole edit one undo step.
   local row, col = region.end_row, region.end_col
   local tail = verdict.tail or ''
+
+  -- Block-opening (cluster B): a three-line splice — the head + ` {`, an indented
+  -- body line, and the closing `}` at base. The cursor lands on the body line
+  -- (row + 2, 1-based), so `startinsert!` drops it at `base + unit`, inside the
+  -- block. analyze already resolved body/close from the indent context.
+  if verdict.opens_block then
+    vim.api.nvim_buf_set_text(
+      buf,
+      row,
+      col - #tail,
+      row,
+      col,
+      { verdict.insert .. tail, verdict.body, verdict.close }
+    )
+    insert_at_line_end(row + 2)
+    return
+  end
+
   vim.api.nvim_buf_set_text(
     buf,
     row,
