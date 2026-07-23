@@ -170,4 +170,31 @@ T['a } while tail terminates, not a block'] = function()
   eq(child.fn.mode(), 'i')
 end
 
+-- Issue 05, cluster C: a declaration opens a block with NO `;` on the closing
+-- brace — it is self-terminating.
+T['opens a declaration block with no trailing semicolon'] = function()
+  setup_buffer('typescript', { 'function foo(a' }, { 1, 5 })
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'function foo(a) {', '  ', '}' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
+  eq(child.fn.mode(), 'i')
+end
+
+-- An assigned arrow opens a block whose closing brace carries the statement's
+-- `;` (`};`), and the whole three-line edit reverts in a single undo.
+T['opens an assigned arrow block with a terminated brace, one undo'] = function()
+  setup_buffer('typescript', { 'const f = () =>' }, { 1, 6 })
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  child.type_keys('i', '<C-j>')
+
+  eq(lines(), { 'const f = () => {', '  ', '};' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
+  eq(child.fn.mode(), 'i')
+
+  child.type_keys('<Esc>', 'u')
+  eq(lines(), { 'const f = () =>' })
+end
+
 return T

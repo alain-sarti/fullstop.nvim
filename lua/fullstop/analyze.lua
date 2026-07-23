@@ -15,7 +15,12 @@
 -- Cluster B (ticket 04): a control-flow head opens an idempotent `{ }` block
 -- (opens_block = true) instead of terminating — closers then ` {`, the body line
 -- at `base + unit` (cursor there) and the closing `}` at `base`, no `;`.
--- Declaration & arrow blocks (cluster C) land in ticket 05.
+--
+-- Cluster C (ticket 05): declaration & expression blocks reuse that same
+-- machinery. A `function` / `class` head (bare or behind `export` / `async`) and
+-- a bare `=>` arrow open a block; the closing `}` gets a `;` iff the construct is
+-- an assigned expression (`const f = function`, `const f = () =>`) and `∅` for a
+-- self-terminating declaration. `=> expr` / `=> (` is an expression body → A.
 
 local M = {}
 
@@ -221,11 +226,85 @@ local function opens_block(code)
   return true
 end
 
+-- Cluster C (ticket 05): declaration & expression blocks. A `function` / `class`
+-- head — bare or behind an `export` / `export default` / `async` prefix — opens a
+-- block like cluster B. `strip_c_prefix` peels those prefixes so the governing
+-- keyword sits at the head; `%f[%W]` pins a whole-word match (`class`, not
+-- `classy`; `function*` counts, the `*` being a boundary).
+local function strip_c_prefix(code)
+  local s = code:gsub('^%s*', '')
+  s = s:gsub('^export%s+default%s+', ''):gsub('^export%s+', '')
+  return (s:gsub('^async%s+', ''))
+end
+
+local function is_decl_head(code)
+  local s = strip_c_prefix(code)
+  return s:match('^function%f[%W]') ~= nil or s:match('^class%f[%W]') ~= nil
+end
+
+-- A `function` / `class` on the RHS of an assignment (`const f = function`,
+-- `const C = class`, `x = async function`). These open the same block as a
+-- declaration but keep the `;` — the assignment statement still needs it.
+local function is_assigned_construct(code)
+  return code:match('=%s*function%f[%W]') ~= nil
+    or code:match('=%s*async%s+function%f[%W]') ~= nil
+    or code:match('=%s*class%f[%W]') ~= nil
+end
+
+-- The `=>` rule keys off what follows the LAST arrow. It opens a block only when
+-- the arrow has no body yet (bare `=>`) or its `{` is already typed (`=> {`); an
+-- expression body (`=> x + 1`, `=> (`, `=> ({…})`) is cluster A — just terminate,
+-- so this returns false and analyze falls through. The last arrow wins so a
+-- param-list default (`(x = () => 1) =>`) doesn't fool it.
+local function arrow_opens_block(code)
+  local pos, from = nil, 1
+  while true do
+    local a = code:find('=>', from, true)
+    if not a then
+      break
+    end
+    pos, from = a, a + 2
+  end
+  if not pos then
+    return false
+  end
+  local after = code:sub(pos + 2):gsub('^%s*', '')
+  return after == '' or after == '{'
+end
+
+-- Cluster C classifier. Returns { assigned = <bool> } when the region opens a
+-- declaration/expression block, or nil when it doesn't (→ cluster A). `assigned`
+-- decides the terminator: a declaration is self-terminating (`∅`), an assigned
+-- expression keeps its `;`. A block-opening arrow is always an assigned
+-- expression in v1 (`const f = () =>`); an expression-body arrow is cluster A.
+--
+-- Two non-destructive v1 gaps (ADR-0001 makes a wrong verdict revert in one `u`):
+--   * The RHS/arrow patterns scan raw code, not tokens-outside-literals, so a
+--     literal `= class` / `=>` *inside a string* can wrongly open a block. Head
+--     forms (`is_decl_head`) are safe — a statement can't start inside a string.
+--   * A bare arrow is tagged assigned unconditionally; a callback arrow that is
+--     NOT an assignment RHS (`foo(() =>`) still gets a `;`. v1 arrows are the
+--     `const f = …` assignment shape; callbacks are out of scope (best-effort).
+local function classify_c(code)
+  if is_decl_head(code) then
+    return { assigned = false }
+  end
+  if is_assigned_construct(code) then
+    return { assigned = true }
+  end
+  if arrow_opens_block(code) then
+    return { assigned = true }
+  end
+  return nil
+end
+
 -- Build the block-opening verdict. When the block `{` is already typed (code
 -- ends with it) we reuse it — closing only the frames below — so firing twice
 -- never doubles the brace; otherwise we close the whole stack and add ` {`.
 -- The body line is `base + unit` (cursor lands there), the closing `}` at `base`.
-local function open_block(code, res, ctx)
+-- `assigned` (cluster C) tacks a `;` onto the closing `}` for an assigned
+-- expression; cluster B and declarations leave it off (self-terminating).
+local function open_block(code, res, ctx, assigned)
   local frames = res.frames
   local head
   if code:sub(-1) == '{' then
@@ -242,7 +321,7 @@ local function open_block(code, res, ctx)
     opens_block = true,
     insert = head,
     body = ctx.base .. ctx.unit,
-    close = ctx.base .. '}',
+    close = ctx.base .. '}' .. (assigned and ';' or ''),
     tail = res.tail,
   }
 end
@@ -269,6 +348,12 @@ function M.analyze(region_text, indent_context)
   -- Cluster B: a control-flow head opens an idempotent block (no terminator).
   if opens_block(code) then
     return open_block(code, res, indent_context)
+  end
+
+  -- Cluster C: a declaration/expression head opens a block; `;` iff assigned.
+  local c = classify_c(code)
+  if c then
+    return open_block(code, res, indent_context, c.assigned)
   end
 
   local closers = closers_of(res.frames)

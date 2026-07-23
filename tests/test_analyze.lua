@@ -229,4 +229,69 @@ T['a } while tail terminates instead of opening a block'] = function()
   )
 end
 
+-- Issue 05, cluster C: a declaration head opens a block like cluster B, but with
+-- NO trailing `;` (a declaration is self-terminating). Reuses open_block, so the
+-- body/close geometry matches B; the closing `}` carries no `;`.
+T['opens a block for a function declaration, no semicolon'] = function()
+  MiniTest.expect.equality(
+    analyze('function foo(a', ctx),
+    { kind = 'complete', opens_block = true, insert = ') {', body = '  ', close = '}' }
+  )
+end
+
+-- Table-driven coverage of every cluster-C block form. Each opens a block (cursor
+-- at `base + unit`); the closing `}` carries a `;` iff the construct is an
+-- assigned expression (`const f = …`), and `∅` for a declaration. `close` is the
+-- only axis that varies between the two, so it rides in each row.
+T['opens a declaration/expression block for each cluster-C form'] = function()
+  local cblock = function(insert, close)
+    return { kind = 'complete', opens_block = true, insert = insert, body = '  ', close = close }
+  end
+  local cases = {
+    -- declarations: self-terminating, no `;`
+    { 'function foo(a', ') {', '}' },
+    { 'async function foo(a', ') {', '}' },
+    { 'function* gen(a', ') {', '}' },
+    { 'export function foo(a', ') {', '}' },
+    { 'export default class Bar', ' {', '}' },
+    { 'class Bar extends Foo', ' {', '}' },
+    -- assigned expressions: keep the statement's `;`
+    { 'const f = function(a', ') {', '};' },
+    { 'const f = async function(a', ') {', '};' },
+    { 'const C = class', ' {', '};' },
+    { 'const f = () =>', ' {', '};' }, -- bare arrow, no body yet
+    { 'const f = () => {', '', '};' }, -- `=> {` reuses the typed brace
+  }
+  for _, c in ipairs(cases) do
+    MiniTest.expect.equality({ c[1], analyze(c[1], ctx) }, { c[1], cblock(c[2], c[3]) })
+  end
+end
+
+-- The other two arms of the `=>` rule: an expression body is cluster A (balance +
+-- terminate, no block), whether it's a plain expression, a parenthesised one, or
+-- an object return `=> ({…})`.
+T['an arrow with an expression body terminates instead of opening a block'] = function()
+  local aterm = function(insert)
+    return { kind = 'complete', insert = insert, opens_block = false }
+  end
+  local cases = {
+    { 'const f = (x) => x + 1', ';' },
+    { 'const f = () => (', ');' },
+    { 'const f = () => ({', ' });' },
+  }
+  for _, c in ipairs(cases) do
+    MiniTest.expect.equality({ c[1], analyze(c[1], ctx) }, { c[1], aterm(c[2]) })
+  end
+end
+
+-- A bare call `foo(a` — e.g. a method inside a class body — is NOT read as a
+-- declaration: analyze is context-free, so it completes as a call (`;`), never a
+-- block. Documented v2 gap: class members need class-body context we don't have.
+T['a bare call stays a call, not a declaration (class-member v2 gap)'] = function()
+  MiniTest.expect.equality(
+    analyze('foo(a', ctx),
+    { kind = 'complete', insert = ');', opens_block = false }
+  )
+end
+
 return T
