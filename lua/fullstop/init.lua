@@ -1,6 +1,10 @@
 -- fullstop: public API + wiring. setup() config, and complete_statement() which
 -- threads locate -> analyze -> apply behind the filetype guard, notifying on
 -- Decline (which never touches the buffer).
+--
+-- Config is plain data handed straight to `analyze` (which reads `semicolons`),
+-- so the brain stays pure — it takes the settings as an argument rather than
+-- reaching back here for them.
 
 local analyze = require('fullstop.analyze')
 local locate = require('fullstop.locate')
@@ -30,7 +34,7 @@ function M.complete_statement()
 
   local cursor = vim.api.nvim_win_get_cursor(0)
   local region = locate.locate(buf, cursor)
-  local verdict = region and analyze.analyze(region.text, region.indent_context)
+  local verdict = region and analyze.analyze(region.text, region.indent_context, M.config)
     or { kind = 'advance' }
 
   if verdict.kind == 'decline' then

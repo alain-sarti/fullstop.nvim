@@ -86,7 +86,7 @@ Pure brain wrapped in thin Neovim shells.
 
 | Module | Responsibility | Depends on |
 |---|---|---|
-| `analyze` | **Pure Lua, zero `vim.*`, cursor-free.** Input: `analyze(region_text, indent_context)`. Output: a **tagged verdict** (see below). Holds all rules: delimiter balancer, construct classifier, completer. | nothing |
+| `analyze` | **Pure Lua, zero `vim.*`, cursor-free.** Input: `analyze(region_text, indent_context, opts)` (`opts` is the config, of which it reads `semicolons`). Output: a **tagged verdict** (see below). Holds all rules: delimiter balancer, construct classifier, completer. | nothing |
 | `locate` | Treesitter shell: from buffer + cursor, using the buffer's parser, walk up to the enclosing statement region → `{ text, start, end, indent_context }`, or `nil` if none. | nvim + treesitter |
 | `apply` | Nvim shell: execute a verdict in **one undo block**, set cursor, land in insert mode. | nvim API |
 | `init` | Public API + config: `setup(opts)`, `complete_statement()` wiring locate → analyze → apply, filetype guard, `vim.notify` for Decline. | the above |

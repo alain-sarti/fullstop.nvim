@@ -1,7 +1,7 @@
 -- fullstop: the pure brain. Zero vim.*, cursor-free, string-only, so it is
 -- unit-testable as plain Lua.
 --
---   analyze(region_text, indent_context) -> tagged verdict
+--   analyze(region_text, indent_context, opts) -> tagged verdict
 --     { kind = 'complete', insert = <string>, opens_block = false, tail = <string?> }
 --     { kind = 'complete', opens_block = true, insert = <string>,
 --       body = <string>, close = <string>, tail = <string?> }
@@ -21,6 +21,11 @@
 -- a bare `=>` arrow open a block; the closing `}` gets a `;` iff the construct is
 -- an assigned expression (`const f = function`, `const f = () =>`) and `∅` for a
 -- self-terminating declaration. `=> expr` / `=> (` is an expression body → A.
+--
+-- Ticket 06: `opts.semicolons = false` (ASI / `semi: false` projects) empties the
+-- terminator everywhere — cluster A's `;` and cluster C's `};` alike. Balancing
+-- and block-opening are unaffected; with no `;` to add, a balanced statement has
+-- no delta left and reads as already-complete → Advance.
 
 local M = {}
 
@@ -302,9 +307,10 @@ end
 -- ends with it) we reuse it — closing only the frames below — so firing twice
 -- never doubles the brace; otherwise we close the whole stack and add ` {`.
 -- The body line is `base + unit` (cursor lands there), the closing `}` at `base`.
--- `assigned` (cluster C) tacks a `;` onto the closing `}` for an assigned
--- expression; cluster B and declarations leave it off (self-terminating).
-local function open_block(code, res, ctx, assigned)
+-- `terminator` (cluster C) rides on the closing `}` for an assigned expression;
+-- cluster B and declarations pass `''` (self-terminating), and so does every
+-- construct under `semicolons = false`.
+local function open_block(code, res, ctx, terminator)
   local frames = res.frames
   local head
   if code:sub(-1) == '{' then
@@ -321,12 +327,16 @@ local function open_block(code, res, ctx, assigned)
     opens_block = true,
     insert = head,
     body = ctx.base .. ctx.unit,
-    close = ctx.base .. '}' .. (assigned and ';' or ''),
+    close = ctx.base .. '}' .. terminator,
     tail = res.tail,
   }
 end
 
-function M.analyze(region_text, indent_context)
+function M.analyze(region_text, indent_context, opts)
+  -- The one terminator string the whole verdict is built from. `semicolons =
+  -- false` empties it; anything else (including no opts at all) keeps `;`.
+  local terminator = (opts and opts.semicolons == false) and '' or ';'
+
   if rstrip(region_text) == '' then
     return { kind = 'advance' }
   end
@@ -347,22 +357,29 @@ function M.analyze(region_text, indent_context)
 
   -- Cluster B: a control-flow head opens an idempotent block (no terminator).
   if opens_block(code) then
-    return open_block(code, res, indent_context)
+    return open_block(code, res, indent_context, '')
   end
 
   -- Cluster C: a declaration/expression head opens a block; `;` iff assigned.
   local c = classify_c(code)
   if c then
-    return open_block(code, res, indent_context, c.assigned)
+    return open_block(code, res, indent_context, c.assigned and terminator or '')
   end
 
+  -- Nothing left to add — balanced, and the terminator is either already typed
+  -- or one we're configured never to append — so the statement is complete.
   local closers = closers_of(res.frames)
-  local already_terminated = closers == '' and code:sub(-1) == ';'
-  if already_terminated then
+  local nothing_to_add = closers == '' and (terminator == '' or code:sub(-1) == ';')
+  if nothing_to_add then
     return { kind = 'advance' }
   end
 
-  return { kind = 'complete', insert = closers .. ';', opens_block = false, tail = res.tail }
+  return {
+    kind = 'complete',
+    insert = closers .. terminator,
+    opens_block = false,
+    tail = res.tail,
+  }
 end
 
 return M

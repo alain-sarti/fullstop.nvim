@@ -90,6 +90,19 @@ T['a plain TS statement completes in a tsx buffer (buffer parser)'] = function()
   eq(child.fn.mode(), 'i')
 end
 
+-- Issue 06: the TSX best-effort claim, pinned on the shape it matters for — a
+-- component's arrow head. `locate` uses the buffer's own parser, so this runs
+-- through the `tsx` grammar, and the TypeScript parts complete identically.
+T['a component arrow head opens its block in a tsx buffer'] = function()
+  setup_buffer('typescriptreact', { 'const App = () =>' }, { 1, 6 })
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'const App = () => {', '  ', '};' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
+  eq(child.fn.mode(), 'i')
+end
+
 -- Issue 03: an ambiguous regex declines — buffer untouched, a hint shown, no
 -- fresh line. Capture vim.notify to prove the hint fires.
 T['an ambiguous regex declines: buffer unchanged, hint shown, no fresh line'] = function()
@@ -195,6 +208,66 @@ T['opens an assigned arrow block with a terminated brace, one undo'] = function(
 
   child.type_keys('<Esc>', 'u')
   eq(lines(), { 'const f = () =>' })
+end
+
+-- Issue 06: `setup({ semicolons = false })` reaches analyze — delimiters still
+-- close, but nothing is terminated.
+T['semicolons = false closes delimiters and appends no terminator'] = function()
+  child.lua([[require('fullstop').setup({ semicolons = false })]])
+  setup_buffer('typescript', { 'const x = foo(a, b' }, { 1, 10 })
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'const x = foo(a, b)', '' })
+  eq(child.fn.mode(), 'i')
+end
+
+-- ...and a balanced statement with no `;` is already complete, so it advances
+-- instead of being "finished" with a terminator the project doesn't want.
+T['semicolons = false advances on a balanced statement'] = function()
+  child.lua([[require('fullstop').setup({ semicolons = false })]])
+  setup_buffer('typescript', { 'const x = 1' }, { 1, 4 })
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'const x = 1', '' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 0 })
+  eq(child.fn.mode(), 'i')
+end
+
+-- The option reaches the block path too: an assigned arrow still opens its
+-- block, but the closing brace is a bare `}` rather than `};`.
+T['semicolons = false opens a block with an unterminated closing brace'] = function()
+  child.lua([[require('fullstop').setup({ semicolons = false })]])
+  setup_buffer('typescript', { 'const f = () =>' }, { 1, 6 })
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'const f = () => {', '  ', '}' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
+  eq(child.fn.mode(), 'i')
+end
+
+-- Issue 06: a filetype outside the configured list Declines — the buffer is
+-- untouched (no fake newline) and the hint says why.
+T['an unsupported filetype declines with a hint, buffer untouched'] = function()
+  setup_buffer('lua', { 'local x = foo(a, b' }, { 1, 10 })
+  child.lua([[
+    _G.hints = {}
+    vim.notify = function(msg) table.insert(_G.hints, msg) end
+  ]])
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'local x = foo(a, b' })
+  eq(child.lua_get('_G.hints'), { 'fullstop: unsupported filetype' })
+end
+
+-- `filetypes` is configurable: narrowing it turns a default-supported buffer
+-- into a Decline, proving the guard reads config rather than a hardcoded list.
+T['a filetype dropped from the configured list declines'] = function()
+  child.lua([[require('fullstop').setup({ filetypes = { 'typescript' } })]])
+  setup_buffer('typescriptreact', { 'const x = foo(a, b' }, { 1, 10 })
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'const x = foo(a, b' })
 end
 
 return T

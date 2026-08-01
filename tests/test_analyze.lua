@@ -294,4 +294,61 @@ T['a bare call stays a call, not a declaration (class-member v2 gap)'] = functio
   )
 end
 
+-- Issue 06: `semicolons = false` (ASI / `semi: false` projects). analyze takes
+-- the config as a third argument and appends no `;` anywhere — it still balances
+-- delimiters and still opens blocks, it just never terminates.
+local no_semi = { semicolons = false }
+
+T['semicolons = false closes delimiters without a terminator'] = function()
+  MiniTest.expect.equality(
+    analyze('const x = foo(a, b', ctx, no_semi),
+    { kind = 'complete', insert = ')', opens_block = false }
+  )
+end
+
+-- With no terminator to add, a balanced statement has nothing left to finish —
+-- so it reads as already-complete and advances (the criterion that makes the
+-- option usable: firing on a finished line still opens a fresh one).
+T['semicolons = false advances on a balanced statement with no terminator'] = function()
+  MiniTest.expect.equality(analyze('const x = 1', ctx, no_semi), { kind = 'advance' })
+end
+
+-- An explicit `;` the user typed is still an already-complete statement.
+T['semicolons = false still advances on an explicitly terminated statement'] = function()
+  MiniTest.expect.equality(analyze('const x = 1;', ctx, no_semi), { kind = 'advance' })
+end
+
+-- The assigned-expression `;` on a cluster-C closing brace is a terminator too,
+-- so it goes as well: `};` becomes `}`. Declarations and cluster B are unchanged
+-- (they never carried one), and blocks still open.
+T['semicolons = false drops the assigned-expression brace terminator'] = function()
+  MiniTest.expect.equality(
+    analyze('const f = () =>', ctx, no_semi),
+    { kind = 'complete', opens_block = true, insert = ' {', body = '  ', close = '}' }
+  )
+end
+
+T['semicolons = false leaves control-flow blocks unchanged'] = function()
+  MiniTest.expect.equality(
+    analyze('if (cond', ctx, no_semi),
+    { kind = 'complete', opens_block = true, insert = ') {', body = '  ', close = '}' }
+  )
+end
+
+-- The trailing comment still rides after the closers, with no `;` before it.
+T['semicolons = false completes before a trailing comment'] = function()
+  MiniTest.expect.equality(
+    analyze('const x = getValue(a // grab it', ctx, no_semi),
+    { kind = 'complete', insert = ')', opens_block = false, tail = ' // grab it' }
+  )
+end
+
+-- Decline outranks the option: an unsafe lex is still untouchable.
+T['semicolons = false still declines an ambiguous regex'] = function()
+  MiniTest.expect.equality(
+    analyze('const r = /a(b/', ctx, no_semi),
+    { kind = 'decline', reason = 'ambiguous regex or division' }
+  )
+end
+
 return T
