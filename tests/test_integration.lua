@@ -29,49 +29,209 @@ local function lines()
   return child.api.nvim_buf_get_lines(0, 0, -1, false)
 end
 
-T['completes an open paren from insert mode, one undo'] = function()
-  setup_buffer('typescript', { 'const x = foo(a, b' }, { 1, 10 })
+-- The nesting matrix (issue 02) ---------------------------------------------
+--
+-- Issue 01 shipped green because every fixture here was a top-level statement —
+-- the one shape where the buggy anchoring rule happened to be right. Some were
+-- *indented*, which reads like nesting but, with no enclosing `{ }`, is still
+-- top level; that is the false confidence this matrix removes.
+--
+-- A behaviour is written once, relative to its own statement: `lines` / `want`
+-- carry no leading indent, and `cursor` / `want_cursor` are relative to the
+-- statement's first line and to that indent. A shape wraps the statement in
+-- enclosing lines and prefixes `indent` to each of its lines, so a further shape
+-- costs one table entry instead of a copy of every case.
+
+local SHAPES = {
+  { label = 'at top level', before = {}, after = {}, indent = '' },
+  {
+    label = 'inside a function body',
+    before = { 'function outer() {' },
+    after = { '}' },
+    indent = '  ',
+  },
+  {
+    label = 'two blocks deep',
+    before = { 'function outer() {', '  if (ready) {' },
+    after = { '  }', '}' },
+    indent = '    ',
+  },
+  {
+    label = 'inside a class method body',
+    before = { 'class C {', '  m() {' },
+    after = { '  }', '}' },
+    indent = '    ',
+  },
+}
+
+local CASES = {
+  -- Cluster A (issue 02): balance the delimiters, then terminate.
+  {
+    label = 'closes an open paren and terminates',
+    lines = { 'const x = foo(a, b' },
+    cursor = { 1, 10 },
+    want = { 'const x = foo(a, b);', '' },
+    want_cursor = { 2, 0 },
+  },
+  -- "The cursor selects, never bounds": a wrapped statement completes as one
+  -- whole, and the fresh line follows its head-line indent.
+  {
+    label = 'completes a wrapped statement as one whole',
+    lines = { 'const x = foo(', '  a, b' },
+    cursor = { 2, 4 },
+    want = { 'const x = foo(', '  a, b);', '' },
+    want_cursor = { 3, 0 },
+  },
+  -- Issue 03: the insertion lands before a trailing comment, which survives.
+  {
+    label = 'completes before a trailing comment, preserving it',
+    lines = { 'const x = getValue(a // grab it' },
+    cursor = { 1, 12 },
+    want = { 'const x = getValue(a); // grab it', '' },
+    want_cursor = { 2, 0 },
+  },
+  -- Cluster B (issue 04): a control-flow head opens a `{ }` block at the
+  -- statement indent.
+  {
+    label = 'opens a control-flow block',
+    lines = { 'if (cond' },
+    cursor = { 1, 4 },
+    want = { 'if (cond) {', '  ', '}' },
+    want_cursor = { 2, 2 },
+  },
+  -- `base` tracks the head line, not the physical line the block lands on.
+  {
+    label = 'opens a block for a wrapped head at the head-line indent',
+    lines = { 'if (', '  cond' },
+    cursor = { 2, 4 },
+    want = { 'if (', '  cond) {', '  ', '}' },
+    want_cursor = { 3, 2 },
+  },
+  -- Cluster C (issue 05): a declaration is self-terminating, an assigned arrow
+  -- is not.
+  {
+    label = 'opens a declaration block with no terminator',
+    lines = { 'function foo(a' },
+    cursor = { 1, 5 },
+    want = { 'function foo(a) {', '  ', '}' },
+    want_cursor = { 2, 2 },
+  },
+  {
+    label = 'opens an assigned arrow block with a terminated brace',
+    lines = { 'const f = () =>' },
+    cursor = { 1, 6 },
+    want = { 'const f = () => {', '  ', '};' },
+    want_cursor = { 2, 2 },
+  },
+  -- Advance: nothing to finish, so a fresh line below — the enclosing construct
+  -- keeps its braces.
+  {
+    label = 'advances past an already-complete statement',
+    lines = { 'const x = 1;' },
+    cursor = { 1, 4 },
+    want = { 'const x = 1;', '' },
+    want_cursor = { 2, 0 },
+  },
+  -- "Blank", not "empty": every shape prefixes its indent, so the nested runs
+  -- fire on an indent-only line. A bare empty line inside a block is the one
+  -- nested shape the prefix rule can't express — asserted on its own below.
+  {
+    label = 'advances on a blank line',
+    lines = { '' },
+    cursor = { 1, 0 },
+    want = { '', '' },
+    want_cursor = { 2, 0 },
+  },
+  -- Decline (issue 03): unreadable structure changes nothing and says why —
+  -- inside a block too, where a stray splice would have landed on the
+  -- enclosing construct.
+  {
+    label = 'declines on an ambiguous regex',
+    lines = { 'const r = /a(b/' },
+    cursor = { 1, 11 },
+    want = { 'const r = /a(b/' },
+    want_cursor = { 1, 11 },
+    hints = { 'fullstop: ambiguous regex or division' },
+  },
+}
+
+-- Wrap the statement lines in the shape's enclosing block(s), indenting each.
+local function nest(shape, statement_lines)
+  local out = vim.deepcopy(shape.before)
+  for _, line in ipairs(statement_lines) do
+    out[#out + 1] = shape.indent .. line
+  end
+  for _, line in ipairs(shape.after) do
+    out[#out + 1] = line
+  end
+  return out
+end
+
+-- The same shift for a (1-based row, 0-based col) position.
+local function nest_pos(shape, pos)
+  return { #shape.before + pos[1], #shape.indent + pos[2] }
+end
+
+-- Collect the hints a fire shows, readable back as `_G.hints`.
+local function capture_hints()
+  child.lua([[
+    _G.hints = {}
+    vim.notify = function(msg) table.insert(_G.hints, msg) end
+  ]])
+end
+
+local function run_case(shape, case)
+  local before = nest(shape, case.lines)
+  setup_buffer('typescript', before, nest_pos(shape, case.cursor))
+  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
+  capture_hints()
   child.type_keys('i', '<C-j>')
 
-  eq(lines(), { 'const x = foo(a, b);', '' })
-  eq(child.api.nvim_win_get_cursor(0), { 2, 0 })
-  eq(child.fn.mode(), 'i')
+  local after = nest(shape, case.want)
+  eq(lines(), after)
+  eq(child.api.nvim_win_get_cursor(0), nest_pos(shape, case.want_cursor))
+  eq(child.lua_get('_G.hints'), case.hints or {})
 
-  -- The whole completion reverts with a single `u`.
-  child.type_keys('<Esc>', 'u')
-  eq(lines(), { 'const x = foo(a, b' })
+  -- One `u` reverts the whole completion, enclosing construct included. A fire
+  -- that changed nothing (Decline) has no edit to revert, and `u` would undo the
+  -- fixture's own buffer setup instead — its untouched buffer is asserted above.
+  if not vim.deep_equal(before, after) then
+    child.type_keys('<Esc>', 'u')
+    eq(lines(), before)
+  end
 end
+
+for _, shape in ipairs(SHAPES) do
+  for _, case in ipairs(CASES) do
+    T[case.label .. ' ' .. shape.label] = function()
+      run_case(shape, case)
+    end
+  end
+end
+
+-- The matrix indents every statement line, so its blank-line case is always
+-- indent-only. A bare empty line inside a block Advances too: with no statement
+-- to anchor, `apply` takes the fresh line's indent from the cursor line, which
+-- here is empty — and the enclosing braces stay put.
+T['advances on a bare empty line inside a block'] = function()
+  setup_buffer('typescript', { 'function outer() {', '', '}' }, { 2, 0 })
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'function outer() {', '', '', '}' })
+  eq(child.api.nvim_win_get_cursor(0), { 3, 0 })
+  eq(child.fn.mode(), 'i')
+end
+
+-- Shape-independent behaviour ------------------------------------------------
+-- What the matrix doesn't vary: the mode a fire starts in, buffer options,
+-- config, and the filetype guard. These run at top level, since nesting is
+-- orthogonal to each of them.
 
 T['a normal-mode fire completes and lands in insert'] = function()
   setup_buffer('typescript', { 'const x = foo(a, b' }, { 1, 10 })
   child.type_keys('<C-j>')
 
   eq(lines(), { 'const x = foo(a, b);', '' })
-  eq(child.fn.mode(), 'i')
-end
-
-T['preserves the head-line indentation on the fresh line'] = function()
-  setup_buffer('typescript', { '  const y = bar(1' }, { 1, 8 })
-  child.type_keys('<C-j>')
-
-  eq(lines(), { '  const y = bar(1);', '  ' })
-  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
-end
-
-T['an already-complete line advances (fresh line below)'] = function()
-  setup_buffer('typescript', { 'const x = 1;' }, { 1, 4 })
-  child.type_keys('<C-j>')
-
-  eq(lines(), { 'const x = 1;', '' })
-  eq(child.fn.mode(), 'i')
-end
-
-T['an empty line advances'] = function()
-  setup_buffer('typescript', { '' }, { 1, 0 })
-  child.type_keys('<C-j>')
-
-  eq(lines(), { '', '' })
-  eq(child.api.nvim_win_get_cursor(0), { 2, 0 })
   eq(child.fn.mode(), 'i')
 end
 
@@ -103,41 +263,6 @@ T['a component arrow head opens its block in a tsx buffer'] = function()
   eq(child.fn.mode(), 'i')
 end
 
--- Issue 03: an ambiguous regex declines — buffer untouched, a hint shown, no
--- fresh line. Capture vim.notify to prove the hint fires.
-T['an ambiguous regex declines: buffer unchanged, hint shown, no fresh line'] = function()
-  setup_buffer('typescript', { 'const r = /a(b/' }, { 1, 11 })
-  child.lua([[
-    _G.hints = {}
-    vim.notify = function(msg) table.insert(_G.hints, msg) end
-  ]])
-  child.type_keys('<C-j>')
-
-  eq(lines(), { 'const r = /a(b/' })
-  eq(child.lua_get('_G.hints'), { 'fullstop: ambiguous regex or division' })
-end
-
--- Issue 03: the insertion lands before a trailing comment, which survives.
-T['completes before a trailing comment, preserving it'] = function()
-  setup_buffer('typescript', { 'const x = getValue(a // grab it' }, { 1, 12 })
-  child.type_keys('<C-j>')
-
-  eq(lines(), { 'const x = getValue(a); // grab it', '' })
-  eq(child.fn.mode(), 'i')
-end
-
--- Issue 04, cluster B: a control-flow head opens a `{ }` block — closing `)`,
--- appending ` {`, landing the cursor on an indented body line, `}` at base.
-T['opens a block for an if head (spaces buffer)'] = function()
-  setup_buffer('typescript', { 'if (cond' }, { 1, 4 })
-  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
-  child.type_keys('<C-j>')
-
-  eq(lines(), { 'if (cond) {', '  ', '}' })
-  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
-  eq(child.fn.mode(), 'i')
-end
-
 -- A tab-indented buffer: `unit` resolves to a tab, so the body line is one tab.
 T['opens a block in a tab-indented buffer'] = function()
   setup_buffer('typescript', { 'if (cond' }, { 1, 4 })
@@ -147,17 +272,6 @@ T['opens a block in a tab-indented buffer'] = function()
   eq(lines(), { 'if (cond) {', '\t', '}' })
   eq(child.api.nvim_win_get_cursor(0), { 2, 1 })
   eq(child.fn.mode(), 'i')
-end
-
--- `base` tracks the head line, not the physical line the completion lands on: a
--- statement wrapped across lines opens its block at the head-line indent.
-T['a wrapped head opens its block at the head-line indent'] = function()
-  setup_buffer('typescript', { '  if (', '    cond' }, { 2, 4 })
-  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
-  child.type_keys('<C-j>')
-
-  eq(lines(), { '  if (', '    cond) {', '    ', '  }' })
-  eq(child.api.nvim_win_get_cursor(0), { 3, 4 })
 end
 
 -- Idempotent: firing on a head whose `{` is already typed reuses it (no doubled
@@ -181,33 +295,6 @@ T['a } while tail terminates, not a block'] = function()
 
   eq(lines(), { '} while (done);', '' })
   eq(child.fn.mode(), 'i')
-end
-
--- Issue 05, cluster C: a declaration opens a block with NO `;` on the closing
--- brace — it is self-terminating.
-T['opens a declaration block with no trailing semicolon'] = function()
-  setup_buffer('typescript', { 'function foo(a' }, { 1, 5 })
-  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
-  child.type_keys('<C-j>')
-
-  eq(lines(), { 'function foo(a) {', '  ', '}' })
-  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
-  eq(child.fn.mode(), 'i')
-end
-
--- An assigned arrow opens a block whose closing brace carries the statement's
--- `;` (`};`), and the whole three-line edit reverts in a single undo.
-T['opens an assigned arrow block with a terminated brace, one undo'] = function()
-  setup_buffer('typescript', { 'const f = () =>' }, { 1, 6 })
-  child.lua('vim.bo.expandtab = true vim.bo.shiftwidth = 2')
-  child.type_keys('i', '<C-j>')
-
-  eq(lines(), { 'const f = () => {', '  ', '};' })
-  eq(child.api.nvim_win_get_cursor(0), { 2, 2 })
-  eq(child.fn.mode(), 'i')
-
-  child.type_keys('<Esc>', 'u')
-  eq(lines(), { 'const f = () =>' })
 end
 
 -- Issue 06: `setup({ semicolons = false })` reaches analyze — delimiters still
@@ -250,10 +337,7 @@ end
 -- untouched (no fake newline) and the hint says why.
 T['an unsupported filetype declines with a hint, buffer untouched'] = function()
   setup_buffer('lua', { 'local x = foo(a, b' }, { 1, 10 })
-  child.lua([[
-    _G.hints = {}
-    vim.notify = function(msg) table.insert(_G.hints, msg) end
-  ]])
+  capture_hints()
   child.type_keys('<C-j>')
 
   eq(lines(), { 'local x = foo(a, b' })
