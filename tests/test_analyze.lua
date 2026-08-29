@@ -351,4 +351,128 @@ T['semicolons = false still declines an ambiguous regex'] = function()
   )
 end
 
+-- Issue 05, the body slot. `analyze` takes the slot state as a fourth argument
+-- (`'none'` | `'statement'` | `'block'` | `'unknown'`); nil reads as `'none'`, so
+-- every test above is unaffected. A filled slot means the construct already has a
+-- body, so no block opens — the prefix keyword no longer decides that on its own.
+
+-- A body slot filled with an unbraced statement: the construct is complete, so the
+-- verdict is whatever cluster A makes of the whole text. Already terminated →
+-- Advance; missing its `;` → terminate. Never a block.
+T['a statement body slot terminates instead of opening a block'] = function()
+  local cases = {
+    { 'if (test) foo();', { kind = 'advance' } },
+    { 'while (a) foo();', { kind = 'advance' } },
+    { 'for (const x of y) foo();', { kind = 'advance' } },
+    { 'if (a) {\n} else foo();', { kind = 'advance' } },
+    { 'if (!a) return', { kind = 'complete', insert = ';', opens_block = false } },
+    { 'if (a) x = { b: 1 }', { kind = 'complete', insert = ';', opens_block = false } },
+  }
+  for _, c in ipairs(cases) do
+    MiniTest.expect.equality({ c[1], analyze(c[1], ctx, nil, 'statement') }, { c[1], c[2] })
+  end
+end
+
+-- A body slot filled with a closed block: the construct is self-terminating when
+-- its own keyword implies the terminator (control-flow head or declaration), so it
+-- advances. An assigned expression still owes the statement's `;`.
+T['a block body slot advances, unless the construct is an assigned expression'] = function()
+  local cases = {
+    { 'if (a) {\n  x;\n}', { kind = 'advance' } },
+    { 'if (a) {\n} else {\n}', { kind = 'advance' } },
+    { 'function f() {\n  x;\n}', { kind = 'advance' } },
+    { 'export function f() {\n  x;\n}', { kind = 'advance' } },
+    { 'class C {\n  m() {}\n}', { kind = 'advance' } },
+    { 'switch (v) {\n  case 1: break;\n}', { kind = 'advance' } },
+    { 'try {\n} catch (e) {\n}', { kind = 'advance' } },
+    {
+      'const f = function () {\n  x;\n}',
+      { kind = 'complete', insert = ';', opens_block = false },
+    },
+    { 'const C = class {\n  m() {}\n}', { kind = 'complete', insert = ';', opens_block = false } },
+    { 'const f = () => {\n  x;\n}', { kind = 'complete', insert = ';', opens_block = false } },
+  }
+  for _, c in ipairs(cases) do
+    MiniTest.expect.equality({ c[1], analyze(c[1], ctx, nil, 'block') }, { c[1], c[2] })
+  end
+end
+
+-- A self-terminating construct whose block is still open closes the brace and adds
+-- NO terminator — `if (a) { foo();` wants ` }`, not ` } {` and not ` };`.
+T['a block body slot still closes an unclosed brace, without a terminator'] = function()
+  MiniTest.expect.equality(
+    analyze('if (a) { foo();', ctx, nil, 'block'),
+    { kind = 'complete', insert = ' }', opens_block = false }
+  )
+end
+
+-- Step 2 of the decision order, and the one place the grammar and the wanted
+-- behaviour genuinely disagree: treesitter parses the lone `{` of `if (cond) {` as
+-- a statement filling the consequence, but the brace is the block the user is
+-- opening. Reuse outranks the slot, so firing twice still never doubles the brace.
+T['an already-typed block brace outranks a filled body slot'] = function()
+  local reuse = { kind = 'complete', opens_block = true, insert = '', body = '  ', close = '}' }
+  MiniTest.expect.equality(analyze('if (cond) {', ctx, nil, 'statement'), reuse)
+  MiniTest.expect.equality(analyze('function f() {', ctx, nil, 'statement'), reuse)
+end
+
+-- An ERROR anchor carries no body field, so `locate` says `'unknown'` and analyze
+-- falls back to text: is the head's condition balanced with code after it? The
+-- guard-clause idiom is the shape that needs this — `'none'` would open a block.
+T['an unknown body slot reads the head from text'] = function()
+  local cases = {
+    -- filled: the condition closed and a body follows
+    { "if (!a) throw new Error('nope'", { kind = 'complete', insert = ');', opens_block = false } },
+    { 'while (a) foo(', { kind = 'complete', insert = ');', opens_block = false } },
+    -- empty: the head itself is still unfinished
+    {
+      'if (cond',
+      { kind = 'complete', opens_block = true, insert = ') {', body = '  ', close = '}' },
+    },
+    { 'try', { kind = 'complete', opens_block = true, insert = ' {', body = '  ', close = '}' } },
+    { 'else', { kind = 'complete', opens_block = true, insert = ' {', body = '  ', close = '}' } },
+  }
+  for _, c in ipairs(cases) do
+    MiniTest.expect.equality({ c[1], analyze(c[1], ctx, nil, 'unknown') }, { c[1], c[2] })
+  end
+end
+
+-- The text check recurses through `else`: there IS code after the keyword, but it
+-- is another block head, so the slot is empty and a block opens. Without the
+-- recursion `} else if (x` would complete to `);`.
+T['the unknown text check recurses through else'] = function()
+  local block = function(insert)
+    return { kind = 'complete', opens_block = true, insert = insert, body = '  ', close = '}' }
+  end
+  MiniTest.expect.equality(analyze('} else if (x', ctx, nil, 'unknown'), block(') {'))
+  MiniTest.expect.equality(analyze('} else', ctx, nil, 'unknown'), block(' {'))
+  MiniTest.expect.equality(analyze('} else foo();', ctx, nil, 'unknown'), { kind = 'advance' })
+end
+
+-- A filled slot on a non-head statement changes nothing: cluster A never consulted
+-- the keyword, so the fourth argument is inert there.
+T['a filled body slot leaves an ordinary statement alone'] = function()
+  MiniTest.expect.equality(
+    analyze('const x = foo(a, b', ctx, nil, 'statement'),
+    { kind = 'complete', insert = ');', opens_block = false }
+  )
+end
+
+-- Decline still outranks everything: an unsafe lex is untouchable whatever the slot.
+T['a filled body slot still declines an ambiguous regex'] = function()
+  MiniTest.expect.equality(
+    analyze('const r = /a(b/', ctx, nil, 'block'),
+    { kind = 'decline', reason = 'ambiguous regex or division' }
+  )
+end
+
+-- semicolons = false empties the terminator here too: a statement slot that would
+-- have gained a `;` now has nothing left to add, so it advances.
+T['semicolons = false advances on a statement body slot with no terminator'] = function()
+  MiniTest.expect.equality(
+    analyze('if (!a) return', ctx, no_semi, 'statement'),
+    { kind = 'advance' }
+  )
+end
+
 return T

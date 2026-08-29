@@ -142,6 +142,81 @@ local CASES = {
     want = { '', '' },
     want_cursor = { 2, 0 },
   },
+  -- Issue 05: the body slot. A construct whose body is already there never opens
+  -- a block, however block-ish its keyword — and a body on a *later* line is not
+  -- part of the head, so the block opens on the head and the body is pushed below
+  -- the closing `}` (additive per ADR-0001; the reported bug is the first case).
+  {
+    label = 'opens the block on the if head, not on the body below it',
+    lines = { 'if (test)', 'foo();' },
+    cursor = { 1, 4 },
+    want = { 'if (test) {', '  ', '}', 'foo();' },
+    want_cursor = { 2, 2 },
+  },
+  {
+    label = 'opens the block on a wrapped head above its body',
+    lines = { 'if (', '  test', ')', 'foo();' },
+    cursor = { 1, 0 },
+    want = { 'if (', '  test', ') {', '  ', '}', 'foo();' },
+    want_cursor = { 4, 2 },
+  },
+  {
+    label = 'opens the block in front of the head comment',
+    lines = { 'if (test) // check', 'foo();' },
+    cursor = { 1, 4 },
+    want = { 'if (test) { // check', '  ', '}', 'foo();' },
+    want_cursor = { 2, 2 },
+  },
+  -- Fired on the orphaned body instead, the body is its own statement: it is
+  -- already complete, so this advances rather than reaching back up to the head.
+  {
+    label = 'advances when fired on the body below a head',
+    lines = { 'if (test)', 'foo();' },
+    cursor = { 2, 2 },
+    want = { 'if (test)', 'foo();', '' },
+    want_cursor = { 3, 0 },
+  },
+  -- A body on the head's own line: the slot is filled, so terminate or advance.
+  {
+    label = 'advances on a same-line if body',
+    lines = { 'if (test) foo();' },
+    cursor = { 1, 4 },
+    want = { 'if (test) foo();', '' },
+    want_cursor = { 2, 0 },
+  },
+  {
+    label = 'terminates a guard clause instead of opening a block',
+    lines = { 'if (!a) return' },
+    cursor = { 1, 4 },
+    want = { 'if (!a) return;', '' },
+    want_cursor = { 2, 0 },
+  },
+  {
+    label = 'advances on a same-line else body',
+    lines = { 'if (a) {', '} else foo();' },
+    cursor = { 2, 3 },
+    want = { 'if (a) {', '} else foo();', '' },
+    want_cursor = { 3, 0 },
+  },
+  -- A braced body: nothing left to add, and no terminator either — the construct
+  -- carries its own end. (The *unclosed* brace is asserted outside the matrix: its
+  -- `{` swallows the enclosing `}`, which no nested shape survives.)
+  {
+    label = 'advances on a closed control-flow block',
+    lines = { 'if (a) {', '  foo();', '}' },
+    cursor = { 1, 3 },
+    want = { 'if (a) {', '  foo();', '}', '' },
+    want_cursor = { 4, 0 },
+  },
+  -- ...unless the block belongs to an assigned expression, which still owes the
+  -- statement's terminator.
+  {
+    label = 'terminates a closed assigned function block',
+    lines = { 'const f = function () {', '}' },
+    cursor = { 1, 10 },
+    want = { 'const f = function () {', '};', '' },
+    want_cursor = { 3, 0 },
+  },
   -- Decline (issue 03): unreadable structure changes nothing and says why —
   -- inside a block too, where a stray splice would have landed on the
   -- enclosing construct.
@@ -219,6 +294,19 @@ T['advances on a bare empty line inside a block'] = function()
 
   eq(lines(), { 'function outer() {', '', '', '}' })
   eq(child.api.nvim_win_get_cursor(0), { 3, 0 })
+  eq(child.fn.mode(), 'i')
+end
+
+-- Issue 05: an open block brace closes, with no terminator — the `if` carries its
+-- own end. Top level only: nested, this statement's `{` swallows the enclosing
+-- `}`, so the tree holds no statement to anchor to and the fire Advances instead
+-- (ADR-0002's swallowed-brace residual, whose fallback ladder is issue 04).
+T['closes an open block brace without terminating'] = function()
+  setup_buffer('typescript', { 'if (a) { foo();' }, { 1, 3 })
+  child.type_keys('<C-j>')
+
+  eq(lines(), { 'if (a) { foo(); }', '' })
+  eq(child.api.nvim_win_get_cursor(0), { 2, 0 })
   eq(child.fn.mode(), 'i')
 end
 

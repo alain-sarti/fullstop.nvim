@@ -26,6 +26,13 @@
 -- terminator everywhere — cluster A's `;` and cluster C's `};` alike. Balancing
 -- and block-opening are unaffected; with no `;` to add, a balanced statement has
 -- no delta left and reads as already-complete → Advance.
+--
+-- Issue 05: the fourth argument is the **body slot** — `'none'` | `'statement'` |
+-- `'block'` | `'unknown'`, resolved by `locate` from the grammar (ADR-0003); nil
+-- reads as `'none'`. The three head classifiers below answer "does this text start
+-- with a block keyword?", which is not the same question as "does this construct
+-- still need a body?" — so a filled slot vetoes block-opening outright. See
+-- `M.analyze` for the decision order, whose first two steps are load-bearing.
 
 local M = {}
 
@@ -303,6 +310,82 @@ local function classify_c(code)
   return nil
 end
 
+-- Issue 05: is this construct's own terminator implied? A control-flow head and a
+-- declaration both carry their own end (`if (a) {…}`, `function f() {…}` need no
+-- `;`); anything else holding a block is an assigned expression that still owes the
+-- statement's terminator (`const f = function () {…};`). The same two predicates
+-- that decide block-opening answer this — read as a question about the terminator
+-- rather than about the body.
+local function self_terminating(code)
+  return opens_block(code) or is_decl_head(code)
+end
+
+-- Which block-opening cluster claims `code`, and what terminator its closing `}`
+-- carries: `''` for cluster B and for a declaration, the terminator for an assigned
+-- expression. Returns nil when neither cluster claims it (→ cluster A). Note `''`
+-- is truthy in Lua, so `if block_head(…) then` reads as "a block opens here".
+local function block_head(code, terminator)
+  if opens_block(code) then
+    return ''
+  end
+  local c = classify_c(code)
+  if c then
+    return c.assigned and terminator or ''
+  end
+  return nil
+end
+
+-- The `'unknown'` fallback (issue 05). An ERROR anchor carries no body field, so
+-- `locate` cannot say — and `'none'` is the wrong default for the guard-clause
+-- idiom `if (!user) throw new Error('nope'`, which would open a block. Read the
+-- head from text instead: true when the head is finished and something follows it,
+-- false while the head itself is still open (`if (cond`, `try`).
+--
+-- `else` recurses: `} else if (x` does have code after the keyword, but that code
+-- is another head, so the slot is still that head's to fill. The paren scan is
+-- naive about `(` inside a string literal; it only ever runs on an ERROR anchor,
+-- where the text is malformed by definition and ADR-0001 keeps the verdict
+-- revertible in one `u`.
+local function head_has_body(code)
+  local s = code:gsub('^%s*', '')
+  local after_brace = s:match('^}%s*(.*)$')
+  if after_brace then
+    s = after_brace
+  end
+  local kw, rest = s:match('^(%a+)%s*(.*)$')
+  if not kw or not BLOCK_KEYWORDS[kw] then
+    return false -- not a head at all: cluster A never consulted the keyword.
+  end
+  if kw == 'else' then
+    if rest == '' then
+      return false
+    end
+    local inner = rest:match('^(%a+)')
+    if inner and BLOCK_KEYWORDS[inner] then
+      return head_has_body(rest) -- the trailing head owns the slot
+    end
+    return true -- already the else's body
+  end
+  if rest:sub(1, 1) ~= '(' then
+    -- A parenless head (`try`, `finally`): anything after it is its body.
+    return rest ~= '' and rest:sub(1, 1) ~= '{'
+  end
+  local depth = 0
+  for i = 1, #rest do
+    local ch = rest:sub(i, i)
+    if ch == '(' then
+      depth = depth + 1
+    elseif ch == ')' then
+      depth = depth - 1
+      if depth == 0 then
+        local tail = rest:sub(i + 1):gsub('^%s*', '')
+        return tail ~= '' and tail ~= '{'
+      end
+    end
+  end
+  return false -- the condition never closed: the head is still unfinished
+end
+
 -- Build the block-opening verdict. When the block `{` is already typed (code
 -- ends with it) we reuse it — closing only the frames below — so firing twice
 -- never doubles the brace; otherwise we close the whole stack and add ` {`.
@@ -332,10 +415,11 @@ local function open_block(code, res, ctx, terminator)
   }
 end
 
-function M.analyze(region_text, indent_context, opts)
+function M.analyze(region_text, indent_context, opts, body)
   -- The one terminator string the whole verdict is built from. `semicolons =
   -- false` empties it; anything else (including no opts at all) keeps `;`.
   local terminator = (opts and opts.semicolons == false) and '' or ';'
+  body = body or 'none' -- no slot state known reads as "nothing filled"
 
   if rstrip(region_text) == '' then
     return { kind = 'advance' }
@@ -355,15 +439,45 @@ function M.analyze(region_text, indent_context, opts)
     return { kind = 'advance' }
   end
 
-  -- Cluster B: a control-flow head opens an idempotent block (no terminator).
-  if opens_block(code) then
-    return open_block(code, res, indent_context, '')
+  local head = block_head(code, terminator)
+
+  -- Step 2 (issue 05), and the one place the grammar and the wanted behaviour
+  -- genuinely disagree: treesitter reads the lone `{` of `if (cond) {` as a
+  -- statement filling the consequence, but that brace IS the block being opened.
+  -- Reuse therefore outranks the slot, so firing twice never doubles the brace.
+  if head and code:sub(-1) == '{' then
+    return open_block(code, res, indent_context, head)
   end
 
-  -- Cluster C: a declaration/expression head opens a block; `;` iff assigned.
-  local c = classify_c(code)
-  if c then
-    return open_block(code, res, indent_context, c.assigned and terminator or '')
+  -- Step 3: the grammar could not say, so read the head from text.
+  if body == 'unknown' then
+    body = head_has_body(code) and 'statement' or 'none'
+  end
+
+  -- Step 4: the body slot is filled, so no block opens whatever the keyword says.
+  -- A closed block on a self-terminating construct owes no terminator either — it
+  -- advances when balanced, and merely closes the brace when it isn't.
+  if body ~= 'none' then
+    local term = terminator
+    if body == 'block' and self_terminating(code) then
+      term = ''
+    end
+    local closers = closers_of(res.frames)
+    if closers == '' and (term == '' or code:sub(-1) == ';') then
+      return { kind = 'advance' }
+    end
+    return {
+      kind = 'complete',
+      insert = closers .. term,
+      opens_block = false,
+      tail = res.tail,
+    }
+  end
+
+  -- Step 5: an empty slot — cluster B opens an idempotent block (no terminator),
+  -- cluster C a declaration/expression block (`;` iff assigned).
+  if head then
+    return open_block(code, res, indent_context, head)
   end
 
   -- Nothing left to add — balanced, and the terminator is either already typed

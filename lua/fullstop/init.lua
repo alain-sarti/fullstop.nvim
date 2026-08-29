@@ -34,7 +34,11 @@ function M.complete_statement()
 
   local cursor = vim.api.nvim_win_get_cursor(0)
   local region = locate.locate(buf, cursor)
-  local verdict = region and analyze.analyze(region.text, region.indent_context, M.config)
+  -- region.body is the fourth argument: the body slot locate read off the grammar
+  -- (ADR-0003), which is the only thing telling analyze whether the construct
+  -- still needs a block.
+  local verdict = region
+      and analyze.analyze(region.text, region.indent_context, M.config, region.body)
     or { kind = 'advance' }
 
   if verdict.kind == 'decline' then

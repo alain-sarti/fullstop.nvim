@@ -24,6 +24,7 @@ KEY="${KEY:-<C-j>}"
 FT="${FT:-typescript}"
 NVIM_CONFIG="${NVIM_CONFIG:-}"
 FIXTURE="/tmp/fullstop-loop-fixture.ts"
+NORMAL_MAP=""
 
 rem() { nvim --server "$SOCK" --remote-expr "$1" 2>/dev/null; }
 send() { nvim --server "$SOCK" --remote-send "$1" 2>/dev/null; }
@@ -44,20 +45,40 @@ start() {
     echo "       mode 'r?' means it is stuck at a prompt — check :messages in tmux attach -t $SESS"
     exit 1
   fi
-  echo "ready: ft=$(rem '&filetype')  key=$KEY  insert=$(rem "maparg('$KEY','i')")  normal=$(rem "maparg('$KEY','n')")"
+  NORMAL_MAP="$(rem "maparg('$KEY','n')")"
+  echo "ready: ft=$(rem '&filetype')  key=$KEY  insert=$(rem "maparg('$KEY','i')")  normal=${NORMAL_MAP:-unmapped}"
   echo
 }
 
 pass=0
 fail=0
 
-# run <name> <lua-list-of-lines> <cursor-row> <i|n> <expected-json>
+# run <name> <lua-list-of-lines> <cursor-row> <i|n> <expected-json> [col]
+#
+# Without `col` the cursor lands at end of line (`A`), which is where a user
+# fires from mid-typing. Pass `col` (0-based) to fire from *inside* a line — the
+# only way to reach a head whose line ends on a brace, since a cursor on the
+# brace is a cursor in a container ("no statement here" → Advance). It is set
+# after the <Esc>, which would otherwise drag it a column left.
 run() {
-  local name="$1" lines="$2" row="$3" mode="$4" want="$5"
+  local name="$1" lines="$2" row="$3" mode="$4" want="$5" col="${6:-}"
+  # A real config may already own $KEY in normal mode (window/pane navigation is
+  # the usual culprit), which shadows the plugin's map. That is the environment's
+  # answer, not a plugin failure, so skip rather than stay permanently red — the
+  # normal-mode fire itself is covered in tests/test_integration.lua.
+  if [ "$mode" = "n" ] && [ "$NORMAL_MAP" != '<Plug>(CompleteStatement)' ]; then
+    printf 'SKIP  %-26s normal-mode %s is %s\n' "$name" "$KEY" "${NORMAL_MAP:-unmapped}"
+    return
+  fi
   rem "luaeval(\"vim.api.nvim_buf_set_lines(0,0,-1,false,$lines)\")" >/dev/null
   rem "luaeval(\"vim.api.nvim_win_set_cursor(0,{$row,0})\")" >/dev/null
   send '<Esc>'
-  [ "$mode" = "i" ] && send 'A'
+  if [ -n "$col" ]; then
+    rem "luaeval(\"vim.api.nvim_win_set_cursor(0,{$row,$col})\")" >/dev/null
+    [ "$mode" = "i" ] && send 'i'
+  else
+    [ "$mode" = "i" ] && send 'A'
+  fi
   sleep 0.15
   send "$KEY"
   sleep 0.5
@@ -106,6 +127,32 @@ run "nested 2 levels deep" \
 run "class method body" \
   "{'class C {','  m() {','    const v = call(x','  }','}'}" 3 i \
   '["class C {", "  m() {", "    const v = call(x);", "    ", "  }", "}"]'
+
+echo
+echo "=== body slot (issue 05) ==="
+# The reported bug: the block must land on the head, not on the statement below.
+run "if head above body" "{'if (test)','foo();'}" 1 i '["if (test) {", "  ", "}", "foo();"]'
+run "fired on that body" "{'if (test)','foo();'}" 2 i '["if (test)", "foo();", ""]'
+run "multi-line head" "{'if (','  test',')','foo();'}" 1 i \
+  '["if (", "  test", ") {", "  ", "}", "foo();"]'
+run "else head above body" "{'if (a) {','} else','foo();'}" 2 i \
+  '["if (a) {", "} else {", "  ", "}", "foo();"]'
+run "nested if head" "{'function outer() {','  if (test)','  foo();','}'}" 2 i \
+  '["function outer() {", "  if (test) {", "    ", "  }", "  foo();", "}"]'
+# A slot already filled never opens a block, however block-ish the keyword.
+run "same-line if body" "{'if (test) foo();'}" 1 i '["if (test) foo();", ""]'
+run "same-line else body" "{'if (a) {','} else foo();'}" 2 i '["if (a) {", "} else foo();", ""]'
+run "guard return" "{'if (!a) return'}" 1 i '["if (!a) return;", ""]'
+run "guard throw" "{'if (!a) throw new Error(msg'}" 1 i '["if (!a) throw new Error(msg);", ""]'
+# Braced bodies: fired from inside the head, since these lines end on a brace.
+run "closed if block" "{'if (a) {','  foo();','}'}" 1 i \
+  '["if (a) {", "  foo();", "}", ""]' 3
+run "open block brace" "{'if (a) { foo();'}" 1 i '["if (a) { foo(); }", ""]' 3
+run "assigned fn block" "{'const f = function () {','}'}" 1 i \
+  '["const f = function () {", "};", ""]' 10
+# ...and fired on the statement *inside* that open block, the cursor selects it:
+# it is already complete, so this advances instead of reaching up to the `if`.
+run "body in open block" "{'if (a) { foo();'}" 1 i '["if (a) { foo();", ""]'
 
 echo
 echo "=== realistic top-level shapes ==="

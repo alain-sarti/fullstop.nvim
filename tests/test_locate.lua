@@ -37,6 +37,21 @@ local function shape(region)
   }
 end
 
+-- Issue 05: the body slot `locate` resolves from the grammar (ADR-0003) — the
+-- fourth thing it tells `analyze`, and the only shape information analyze gets.
+local function body_for(lines, cursor)
+  local r = region_for(lines, cursor)
+  return r and r.body
+end
+
+-- The position contract plus the slot, for the cases where the two interact.
+local function shape_and_slot(lines, cursor)
+  local r = region_for(lines, cursor)
+  local s = shape(r)
+  s.body = r.body
+  return s
+end
+
 T['a top-level statement anchors to itself'] = function()
   local r = region_for({ 'const x = foo(a, b' }, { 1, 10 })
   eq(shape(r), {
@@ -236,6 +251,175 @@ end
 T['a tail after the block collapses the construct into one anchor'] = function()
   local r = region_for({ 'try {', '  const x = foo(a', '} catch (e) {}' }, { 2, 16 })
   eq(r.text, 'try {\n  const x = foo(a\n} catch (e) {}')
+end
+
+-- Issue 05: what the grammar says about the construct's body slot. `analyze`'s
+-- keyword classifiers cannot answer this — `if (test) foo();` and `if (test)` both
+-- start with `if` — so `locate` reads it off the tree instead.
+local SLOTS = {
+  -- Filled by an unbraced statement on the head's own line.
+  { 'a same-line if body', { 'if (test) foo();' }, { 1, 4 }, 'statement' },
+  { 'a same-line while body', { 'while (a) foo();' }, { 1, 4 }, 'statement' },
+  { 'a same-line for body', { 'for (const x of xs) foo();' }, { 1, 4 }, 'statement' },
+  { 'a guard-clause return', { 'if (!a) return' }, { 1, 4 }, 'statement' },
+  { 'a same-line else body', { 'if (a) {', '} else foo();' }, { 2, 3 }, 'statement' },
+  -- The field walk outranks the positional check: the block belongs to an
+  -- argument, not to the `if`, so the slot is the whole call statement.
+  { 'a body holding an arrow block', { 'if (a) foo(() => { })' }, { 1, 3 }, 'statement' },
+  -- Filled by a braced body, closed or not.
+  { 'a closed if block', { 'if (a) {', '  foo();', '}' }, { 1, 3 }, 'block' },
+  { 'an unclosed if block', { 'if (a) { foo();' }, { 1, 3 }, 'block' },
+  { 'a function body', { 'function f() {', '  foo();', '}' }, { 1, 3 }, 'block' },
+  { 'a class body', { 'class C {', '  m() {}', '}' }, { 1, 3 }, 'block' },
+  { 'a switch body', { 'switch (v) {', '  case 1:', '}' }, { 1, 3 }, 'block' },
+  { 'a trailing catch body', { 'try {', '} catch (e) {', '}' }, { 1, 1 }, 'block' },
+  -- Wrapper anchors carry no body field of their own; the positional check finds
+  -- the block that ends where the statement does.
+  { 'an exported function body', { 'export function f() {', '  foo();', '}' }, { 1, 10 }, 'block' },
+  { 'an assigned function body', { 'const f = function () {', '}' }, { 1, 10 }, 'block' },
+  { 'an assigned class body', { 'const C = class {', '}' }, { 1, 10 }, 'block' },
+  { 'an assigned arrow body', { 'const f = () => {', '}' }, { 1, 10 }, 'block' },
+  -- Nothing filled: an ordinary statement, and the do-while whose `{ }` is not
+  -- the trailing slot (its condition is).
+  { 'a complete statement', { 'foo();' }, { 1, 1 }, 'none' },
+  { 'a function signature', { 'function f({ a })' }, { 1, 10 }, 'none' },
+  { 'a do-while tail', { 'do {', '} while (a)' }, { 1, 1 }, 'none' },
+  -- An ERROR anchor has no fields at all, so the grammar cannot say.
+  { 'an unfinished condition', { 'if (cond' }, { 1, 4 }, 'unknown' },
+  { 'an unfinished guard clause', { "if (!a) throw new Error('nope'" }, { 1, 4 }, 'unknown' },
+  { 'an unfinished else-if', { 'if (a) {', '} else if (x' }, { 2, 9 }, 'unknown' },
+  { 'an unfinished plain statement', { 'const x = foo(a, b' }, { 1, 10 }, 'unknown' },
+}
+
+for _, case in ipairs(SLOTS) do
+  T['reports the body slot for ' .. case[1]] = function()
+    eq({ case[1], body_for(case[2], case[3]) }, { case[1], case[4] })
+  end
+end
+
+-- The head cap (issue 05): a body on a later line is not part of the head the
+-- user is completing, so the region stops at the head's last code character and
+-- the slot reads empty — `analyze` then opens the block on the head itself, and
+-- `apply` pushes the orphaned body below the closing `}`.
+local CAPS = {
+  {
+    label = 'an if head',
+    lines = { 'if (test)', 'foo();' },
+    cursor = { 1, 4 },
+    want = {
+      text = 'if (test)',
+      start_row = 0,
+      start_col = 0,
+      end_row = 0,
+      end_col = 9,
+      base = '',
+      body = 'none',
+    },
+  },
+  {
+    label = 'a nested if head',
+    lines = { 'function f() {', '  if (test)', '  foo();', '}' },
+    cursor = { 2, 6 },
+    want = {
+      text = 'if (test)',
+      start_row = 1,
+      start_col = 2,
+      end_row = 1,
+      end_col = 11,
+      base = '  ',
+      body = 'none',
+    },
+  },
+  {
+    label = 'a multi-line if head',
+    lines = { 'if (', '  test', ')', 'foo();' },
+    cursor = { 1, 0 },
+    want = {
+      text = 'if (\n  test\n)',
+      start_row = 0,
+      start_col = 0,
+      end_row = 2,
+      end_col = 1,
+      base = '',
+      body = 'none',
+    },
+  },
+  {
+    label = 'an else head',
+    lines = { 'if (a) {', '} else', 'foo();' },
+    cursor = { 2, 3 },
+    want = {
+      text = 'if (a) {\n} else',
+      start_row = 0,
+      start_col = 0,
+      end_row = 1,
+      end_col = 6,
+      base = '',
+      body = 'none',
+    },
+  },
+  {
+    label = 'a head separated by a blank line',
+    lines = { 'if (test)', '', 'foo();' },
+    cursor = { 1, 4 },
+    want = {
+      text = 'if (test)',
+      start_row = 0,
+      start_col = 0,
+      end_row = 0,
+      end_col = 9,
+      base = '',
+      body = 'none',
+    },
+  },
+  {
+    -- The cap lands past the trailing comment, which `analyze` hands back as
+    -- `tail` so the ` {` still splices in front of it.
+    label = 'a head with a trailing comment',
+    lines = { 'if (test) // check', 'foo();' },
+    cursor = { 1, 4 },
+    want = {
+      text = 'if (test) // check',
+      start_row = 0,
+      start_col = 0,
+      end_row = 0,
+      end_col = 18,
+      base = '',
+      body = 'none',
+    },
+  },
+}
+
+for _, case in ipairs(CAPS) do
+  T['caps the region at ' .. case.label] = function()
+    eq(shape_and_slot(case.lines, case.cursor), case.want)
+  end
+end
+
+-- Fired *on* the orphaned body, the body is its own statement (the cursor
+-- selects), so `locate` re-anchors onto it instead of capping the head above.
+T['a cursor on the body line re-anchors onto the body'] = function()
+  eq(shape_and_slot({ 'if (test)', 'foo();' }, { 2, 2 }), {
+    text = 'foo();',
+    start_row = 1,
+    start_col = 0,
+    end_row = 1,
+    end_col = 6,
+    base = '',
+    body = 'none',
+  })
+end
+
+T['a cursor on a nested else body re-anchors onto the body'] = function()
+  eq(shape_and_slot({ 'function f() {', '  if (a) {', '  } else', '  foo();', '}' }, { 4, 4 }), {
+    text = 'foo();',
+    start_row = 3,
+    start_col = 2,
+    end_row = 3,
+    end_col = 8,
+    base = '  ',
+    body = 'none',
+  })
 end
 
 return T
